@@ -26,6 +26,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <FastLED.h>
 #include <Adafruit_SHT31.h>
 #include <time.h>
 
@@ -58,7 +59,20 @@ constexpr int8_t  PIN_BATT_ADC  = 4;
 constexpr uint8_t  BACKLIGHT_PWM_CHANNEL = 0;
 constexpr uint32_t BACKLIGHT_PWM_FREQ_HZ = 5000;
 constexpr uint8_t  BACKLIGHT_PWM_BITS    = 8;
-constexpr uint8_t  BACKLIGHT_DUTY        = 28;  // ~11% of 255
+// Brightness rides a sunrise->solar-noon->sunset bell curve: brightest at
+// midday, dimmest at the edges.
+constexpr uint8_t  BACKLIGHT_DUTY_PEAK   = 28;   // ~11% of 255, at solar noon
+constexpr uint8_t  BACKLIGHT_DUTY_FLOOR  = 6;    // ~2% of 255, at sunrise/sunset
+
+constexpr uint8_t  PIN_LED          = 48;
+constexpr uint32_t LED_PULSE_MS     = 4000;  // one breath in-and-out
+constexpr uint32_t LED_PAUSE_MS     = 3000;  // rest between breaths
+constexpr uint32_t LED_PERIOD_MS    = LED_PULSE_MS + LED_PAUSE_MS;
+// Breath runs 0..ceiling in raw channel units (global brightness = full, so we
+// get the LED's complete 8-bit range). The ceiling tracks the backlight
+// sun-curve, so the LED dims with the screen and is brightest at midday.
+constexpr uint8_t  LED_CEIL         = 40;     // brightest point of a breath at midday peak
+constexpr float    LED_GAMMA        = 0.6f;   // <1 rushes the dim end of the fade so it doesn't step
 
 constexpr uint32_t WIFI_TIMEOUT_MS    = 30000;
 constexpr uint32_t WEATHER_REFRESH_MS = 30UL * 60UL * 1000UL;
@@ -72,6 +86,7 @@ constexpr uint32_t NTP_RETRY_MS       = 15UL * 1000UL;  // re-sync clock while s
 // panel is driven with Adafruit_ST7789 + Adafruit_GFX instead.
 Adafruit_ST7789 tft(PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST);
 Adafruit_SHT31  sensor;
+CRGB g_led[1];
 
 Location      g_location;
 Weather       g_weather;
@@ -104,6 +119,15 @@ static bool httpsGet(const String& url, String& outBody) {
   outBody = https.getString();
   https.end();
   return true;
+}
+
+// Rear LED "breath": a smooth in-and-out pulse over LED_PULSE_MS, then a quiet
+// rest of LED_PAUSE_MS before the next one. Returns 0..1.
+static float ledBreath() {
+  uint32_t phase = millis() % LED_PERIOD_MS;
+  if (phase >= LED_PULSE_MS) return 0.0f;          // resting between breaths
+  float x = (float)phase / (float)LED_PULSE_MS;    // 0..1 across one breath
+  return (1.0f - cosf(x * 2.0f * 3.14159f)) * 0.5f;
 }
 
 static String hhmmFromIso(const char* iso) {
@@ -224,6 +248,41 @@ static void wifiOff() {
   WiFi.mode(WIFI_OFF);
 }
 
+// ---------- sun-curve backlight ----------
+static int minutesOfDayNow() {
+  struct tm now;
+  if (!g_ntp_configured || !getLocalTime(&now, 0)) return -1;
+  return now.tm_hour * 60 + now.tm_min;
+}
+
+static int minutesFromHhmm(const String& s) {
+  if (s.length() < 5 || s[2] != ':') return -1;
+  return s.substring(0, 2).toInt() * 60 + s.substring(3, 5).toInt();
+}
+
+// Floor outside daylight, and across daylight a raised-sine bell peaking at
+// solar noon. Falls back to PEAK until time / sun data is known.
+static uint8_t targetBacklightDuty() {
+  int t  = minutesOfDayNow();
+  int sr = minutesFromHhmm(g_weather.sunrise_hhmm);
+  int ss = minutesFromHhmm(g_weather.sunset_hhmm);
+  if (t < 0 || sr < 0 || ss < 0 || ss <= sr) return BACKLIGHT_DUTY_PEAK;
+  if (t <= sr || t >= ss) return BACKLIGHT_DUTY_FLOOR;
+  float x    = (float)(t - sr) / (float)(ss - sr);  // 0..1 across daylight
+  float bell = sinf(x * 3.14159265f);               // 0 at edges, 1 at noon
+  return BACKLIGHT_DUTY_FLOOR +
+         (uint8_t)((BACKLIGHT_DUTY_PEAK - BACKLIGHT_DUTY_FLOOR) * bell + 0.5f);
+}
+
+static void updateBacklight() {
+  uint8_t duty = targetBacklightDuty();
+  static int16_t current = -1;
+  if ((int16_t)duty == current) return;
+  ledcWrite(BACKLIGHT_PWM_CHANNEL, duty);
+  current = duty;
+}
+
+// ---------- battery ----------
 // The 2x100k divider (~50k source impedance) is higher than the ESP32-S3 ADC
 // likes, so analogReadMilliVolts reads a few % low. Single-point fix: a full
 // 4.2V pack read ~80% (~4000 mV), so scale the result up ~5%. Tune against the
@@ -257,9 +316,16 @@ void setup() {
   delay(500);
   Serial.println("Lander boot");
 
+  FastLED.addLeds<NEOPIXEL, PIN_LED>(g_led, 1);
+  // Full global brightness so the LED gets its complete 8-bit range; the actual
+  // (dim) level is set per-frame from the breath below.
+  FastLED.setBrightness(255);
+  g_led[0] = CRGB(0, 0, LED_CEIL);
+  FastLED.show();
+
   ledcSetup(BACKLIGHT_PWM_CHANNEL, BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_PWM_BITS);
   ledcAttachPin(PIN_BACKLIGHT, BACKLIGHT_PWM_CHANNEL);
-  ledcWrite(BACKLIGHT_PWM_CHANNEL, BACKLIGHT_DUTY);
+  ledcWrite(BACKLIGHT_PWM_CHANNEL, BACKLIGHT_DUTY_PEAK);
 
   SPI.begin(PIN_TFT_SCLK, -1, PIN_TFT_MOSI, PIN_TFT_CS);
   tft.init(240, 240, SPI_MODE0);
@@ -309,6 +375,8 @@ void loop() {
     }
   }
 
+  updateBacklight();
+
   // Indoor readout: repaint only when a fresh sensor sample lands (every 5 s).
   if (millis() - g_last_sensor_poll_ms >= SENSOR_POLL_MS) {
     g_last_sensor_poll_ms = millis();
@@ -332,6 +400,24 @@ void loop() {
     s_last_min = nowtm.tm_min;
     drawTimeConsole();
   }
+
+  // Rear LED breathes 0..ceiling in raw channel units (global brightness is
+  // full, giving the LED's complete 8-bit range). The ceiling tracks the
+  // backlight sun-curve, so the LED dims with the screen and the pulse fades
+  // fully off at the bottom and during the rest between breaths.
+  float led_curve = (float)targetBacklightDuty() / (float)BACKLIGHT_DUTY_PEAK;
+  if (led_curve < 0.35f) led_curve = 0.35f;
+  uint8_t led_ceil = (uint8_t)(LED_CEIL * led_curve + 0.5f);
+  // Gamma < 1 lifts the dim end of the breath so the fade rushes through the
+  // lowest few levels (where 8-bit steps are most visible) instead of dwelling
+  // there.
+  float shaped = powf(ledBreath(), LED_GAMMA);
+  uint8_t b = (uint8_t)(led_ceil * shaped + 0.5f);
+  if      (g_battery_pct < 0  ) g_led[0] = CRGB(0, 0, b);       // unknown: blue
+  else if (g_battery_pct < 20 ) g_led[0] = CRGB(b, 0, 0);       // low: red
+  else if (g_battery_pct < 50 ) g_led[0] = CRGB(b, b/2, 0);     // mid: yellow
+  else                          g_led[0] = CRGB(0, b, 0);       // good: green
+  FastLED.show();
 
   delay(100);
 }

@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" font-family="ui-monospace, Menlo, Consolas, monospace">
+  <style>
+    .box { fill: #fafafa; stroke: #222; stroke-width: 1.5; }
+    .label { font-size: 14px; fill: #111; }
+    .small { font-size: 11px; fill: #333; }
+    .title { font-size: 16px; font-weight: 700; fill: #111; }
+    .pwr { stroke: #d33; stroke-width: 2; fill: none; }
+    .gnd { stroke: #111; stroke-width: 2; fill: none; }
+    .sig { stroke: #2a6; stroke-width: 1.6; fill: none; }
+    .i2c { stroke: #b80; stroke-width: 1.6; fill: none; }
+    .adc { stroke: #639; stroke-width: 1.6; fill: none; }
+    .pin-dot { fill: #111; }
+    .junction { fill: #111; }
+    .resistor { fill: #f5e1b3; stroke: #222; stroke-width: 1.2; }
+    text { dominant-baseline: middle; }
+    .legend-swatch { stroke-width: 4; }
+  </style>
+
+  <!-- Title -->
+  <text x="20" y="28" class="title">Lander wiring (ESP32-S3 SuperMini + ST7789 + AHT20 + TP4056 solar)</text>
+  <text x="20" y="48" class="small">Red = +V power · Black = GND · Green = SPI/digital · Orange = I2C · Purple = ADC</text>
+
+  <!-- Solar panel -->
+  <g transform="translate(40,90)">
+    <rect class="box" width="160" height="80" rx="6"/>
+    <text x="80" y="26" class="label" text-anchor="middle">Solar Panel</text>
+    <text x="80" y="46" class="small" text-anchor="middle">5V / 0.6W mini</text>
+    <text x="14" y="68" class="small">+</text>
+    <text x="146" y="68" class="small" text-anchor="end">−</text>
+    <circle cx="20" cy="80" r="3" class="pin-dot"/>
+    <circle cx="140" cy="80" r="3" class="pin-dot"/>
+  </g>
+
+  <!-- TP4056 + boost module -->
+  <g transform="translate(280,90)">
+    <rect class="box" width="240" height="160" rx="6"/>
+    <text x="120" y="22" class="label" text-anchor="middle">TP4056 + Boost</text>
+    <text x="120" y="40" class="small" text-anchor="middle">set OUT to 5.0V via trimmer</text>
+
+    <!-- Pin labels & dots -->
+    <text x="14" y="70" class="small">IN+</text>
+    <circle cx="0" cy="70" r="3" class="pin-dot"/>
+    <text x="14" y="92" class="small">IN−</text>
+    <circle cx="0" cy="92" r="3" class="pin-dot"/>
+
+    <text x="226" y="70" class="small" text-anchor="end">BAT+</text>
+    <circle cx="240" cy="70" r="3" class="pin-dot"/>
+    <text x="226" y="92" class="small" text-anchor="end">BAT−</text>
+    <circle cx="240" cy="92" r="3" class="pin-dot"/>
+
+    <text x="60" y="148" class="small">OUT+</text>
+    <circle cx="60" cy="160" r="3" class="pin-dot"/>
+    <text x="180" y="148" class="small" text-anchor="end">OUT−</text>
+    <circle cx="180" cy="160" r="3" class="pin-dot"/>
+  </g>
+
+  <!-- LiPo -->
+  <g transform="translate(600,110)">
+    <rect class="box" width="170" height="120" rx="6"/>
+    <text x="85" y="24" class="label" text-anchor="middle">LiPo 3.7V</text>
+    <text x="85" y="44" class="small" text-anchor="middle">2000 mAh (Adafruit)</text>
+    <text x="14" y="78" class="small">+ (red)</text>
+    <circle cx="0" cy="78" r="3" class="pin-dot"/>
+    <text x="14" y="102" class="small">− (black)</text>
+    <circle cx="0" cy="102" r="3" class="pin-dot"/>
+  </g>
+
+  <!-- Switch -->
+  <g transform="translate(280,300)">
+    <rect class="box" width="120" height="60" rx="6"/>
+    <text x="60" y="22" class="label" text-anchor="middle">SPST Switch</text>
+    <text x="60" y="42" class="small" text-anchor="middle">on OUT+ line</text>
+    <circle cx="0" cy="30" r="3" class="pin-dot"/>
+    <circle cx="120" cy="30" r="3" class="pin-dot"/>
+  </g>
+
+  <!-- Voltage divider -->
+  <g transform="translate(820,90)">
+    <rect class="box" width="240" height="220" rx="6"/>
+    <text x="120" y="22" class="label" text-anchor="middle">Battery Divider</text>
+    <text x="120" y="40" class="small" text-anchor="middle">2× 100kΩ, midpoint → GPIO 4</text>
+
+    <!-- BAT+ in -->
+    <text x="14" y="68" class="small">from BAT+</text>
+    <circle cx="0" cy="68" r="3" class="pin-dot"/>
+    <line x1="0" y1="68" x2="120" y2="68" class="pwr"/>
+
+    <!-- R1 -->
+    <rect class="resistor" x="100" y="80" width="40" height="22" rx="3"/>
+    <text x="120" y="92" class="small" text-anchor="middle">R1 100k</text>
+    <line x1="120" y1="68" x2="120" y2="80" class="pwr"/>
+    <line x1="120" y1="102" x2="120" y2="130" class="adc"/>
+
+    <!-- midpoint junction + tap to GPIO 4 -->
+    <circle cx="120" cy="130" r="4" class="junction"/>
+    <text x="130" y="130" class="small">midpoint</text>
+    <line x1="120" y1="130" x2="240" y2="130" class="adc"/>
+    <text x="226" y="118" class="small" text-anchor="end">→ GPIO 4</text>
+
+    <!-- R2 -->
+    <rect class="resistor" x="100" y="148" width="40" height="22" rx="3"/>
+    <text x="120" y="160" class="small" text-anchor="middle">R2 100k</text>
+    <line x1="120" y1="130" x2="120" y2="148" class="adc"/>
+    <line x1="120" y1="170" x2="120" y2="200" class="gnd"/>
+
+    <text x="14" y="200" class="small">to GND</text>
+    <circle cx="0" cy="200" r="3" class="pin-dot"/>
+    <line x1="0" y1="200" x2="120" y2="200" class="gnd"/>
+  </g>
+
+  <!-- ESP32-S3 SuperMini -->
+  <g transform="translate(330,420)">
+    <rect class="box" width="280" height="290" rx="6"/>
+    <text x="140" y="22" class="label" text-anchor="middle">ESP32-S3 SuperMini</text>
+    <text x="140" y="40" class="small" text-anchor="middle">12 solder points</text>
+
+    <!-- Left column pins -->
+    <g font-size="11">
+      <circle cx="0" cy="70" r="3" class="pin-dot"/><text x="14" y="70" class="small">5V</text>
+      <circle cx="0" cy="92" r="3" class="pin-dot"/><text x="14" y="92" class="small">GND</text>
+      <circle cx="0" cy="114" r="3" class="pin-dot"/><text x="14" y="114" class="small">3V3</text>
+      <circle cx="0" cy="146" r="3" class="pin-dot"/><text x="14" y="146" class="small">GPIO 4 (ADC)</text>
+      <circle cx="0" cy="168" r="3" class="pin-dot"/><text x="14" y="168" class="small">GPIO 5 → BLK</text>
+      <circle cx="0" cy="190" r="3" class="pin-dot"/><text x="14" y="190" class="small">GPIO 6 → DC</text>
+      <circle cx="0" cy="212" r="3" class="pin-dot"/><text x="14" y="212" class="small">GPIO 7 → RES</text>
+    </g>
+    <!-- Right column pins -->
+    <g font-size="11">
+      <circle cx="280" cy="70" r="3" class="pin-dot"/><text x="266" y="70" class="small" text-anchor="end">GPIO 8 → SDA (sensor)</text>
+      <circle cx="280" cy="92" r="3" class="pin-dot"/><text x="266" y="92" class="small" text-anchor="end">GPIO 9 → SCL (sensor)</text>
+      <circle cx="280" cy="114" r="3" class="pin-dot"/><text x="266" y="114" class="small" text-anchor="end">GPIO 10 → CS</text>
+      <circle cx="280" cy="136" r="3" class="pin-dot"/><text x="266" y="136" class="small" text-anchor="end">GPIO 11 → SDA (display)</text>
+      <circle cx="280" cy="158" r="3" class="pin-dot"/><text x="266" y="158" class="small" text-anchor="end">GPIO 12 → SCL (display)</text>
+    </g>
+  </g>
+
+  <!-- Display -->
+  <g transform="translate(40,460)">
+    <rect class="box" width="220" height="220" rx="6"/>
+    <text x="110" y="22" class="label" text-anchor="middle">ST7789 240x240</text>
+    <text x="110" y="40" class="small" text-anchor="middle">8-pin SPI display</text>
+    <g font-size="11">
+      <circle cx="220" cy="70" r="3" class="pin-dot"/><text x="206" y="70" class="small" text-anchor="end">VCC</text>
+      <circle cx="220" cy="90" r="3" class="pin-dot"/><text x="206" y="90" class="small" text-anchor="end">GND</text>
+      <circle cx="220" cy="110" r="3" class="pin-dot"/><text x="206" y="110" class="small" text-anchor="end">SCL (SCK)</text>
+      <circle cx="220" cy="130" r="3" class="pin-dot"/><text x="206" y="130" class="small" text-anchor="end">SDA (MOSI)</text>
+      <circle cx="220" cy="150" r="3" class="pin-dot"/><text x="206" y="150" class="small" text-anchor="end">RES</text>
+      <circle cx="220" cy="170" r="3" class="pin-dot"/><text x="206" y="170" class="small" text-anchor="end">DC</text>
+      <circle cx="220" cy="190" r="3" class="pin-dot"/><text x="206" y="190" class="small" text-anchor="end">CS</text>
+      <circle cx="220" cy="210" r="3" class="pin-dot"/><text x="206" y="210" class="small" text-anchor="end">BLK</text>
+    </g>
+  </g>
+
+  <!-- Sensor -->
+  <g transform="translate(680,520)">
+    <rect class="box" width="180" height="140" rx="6"/>
+    <text x="90" y="22" class="label" text-anchor="middle">AHT20</text>
+    <text x="90" y="40" class="small" text-anchor="middle">indoor T / RH (I2C)</text>
+    <g font-size="11">
+      <circle cx="0" cy="70" r="3" class="pin-dot"/><text x="14" y="70" class="small">VIN</text>
+      <circle cx="0" cy="90" r="3" class="pin-dot"/><text x="14" y="90" class="small">GND</text>
+      <circle cx="0" cy="110" r="3" class="pin-dot"/><text x="14" y="110" class="small">SDA</text>
+      <circle cx="0" cy="130" r="3" class="pin-dot"/><text x="14" y="130" class="small">SCL</text>
+    </g>
+  </g>
+
+  <!-- Wires -->
+  <!-- Solar to TP4056 -->
+  <path d="M 60 170 L 60 200 L 270 200 L 270 160 L 280 160" class="pwr"/>
+  <path d="M 180 170 L 180 220 L 260 220 L 260 182 L 280 182" class="gnd"/>
+
+  <!-- TP4056 BAT+/BAT- to LiPo -->
+  <line x1="520" y1="160" x2="600" y2="188" class="pwr"/>
+  <line x1="520" y1="182" x2="600" y2="212" class="gnd"/>
+
+  <!-- TP4056 BAT+ to divider input (long path around top) -->
+  <path d="M 520 160 L 540 160 L 540 110 L 800 110 L 820 158" class="pwr"/>
+
+  <!-- TP4056 OUT+ to switch, switch to ESP32 5V -->
+  <path d="M 340 250 L 340 330" class="pwr"/>
+  <path d="M 400 330 L 460 330 L 460 380 L 320 380 L 320 490 L 330 490" class="pwr"/>
+  <!-- TP4056 OUT- to ESP32 GND -->
+  <path d="M 460 250 L 460 280 L 240 280 L 240 512 L 330 512" class="gnd"/>
+
+  <!-- Divider GND to ESP32 GND -->
+  <path d="M 820 290 L 240 290" class="gnd"/>
+  <!-- Divider midpoint to ESP32 GPIO 4 -->
+  <path d="M 1060 220 L 1080 220 L 1080 566 L 610 566" class="adc"/>
+
+  <!-- ESP32 3V3 to display VCC and sensor VIN -->
+  <path d="M 330 534 L 300 534 L 300 530 L 280 530" class="pwr"/>
+  <path d="M 330 534 L 670 534 L 670 590 L 680 590" class="pwr"/>
+
+  <!-- ESP32 GND to display GND and sensor GND -->
+  <path d="M 330 512 L 270 512 L 270 550 L 260 550" class="gnd"/>
+  <path d="M 330 512 L 660 512 L 660 610 L 680 610" class="gnd"/>
+
+  <!-- Display SPI lines -->
+  <path d="M 330 588 L 280 588 L 280 570 L 260 570" class="sig"/> <!-- BLK GPIO 5 -->
+  <path d="M 330 610 L 285 610 L 285 590 L 260 590" class="sig"/> <!-- DC GPIO 6 -->
+  <path d="M 330 632 L 290 632 L 290 610 L 260 610" class="sig"/> <!-- RES GPIO 7 -->
+  <path d="M 610 556 L 270 556 L 270 650 L 260 650" class="sig"/> <!-- CS GPIO 10 -->
+  <path d="M 610 578 L 265 578 L 265 630 L 260 630" class="sig"/> <!-- SDA GPIO 11 -->
+  <path d="M 610 600 L 260 600 L 260 570 L 260 570" class="sig"/> <!-- SCL GPIO 12 (visual route) -->
+
+  <!-- Sensor I2C -->
+  <path d="M 610 490 L 660 490 L 660 630 L 680 630" class="i2c"/>
+  <path d="M 610 512 L 655 512 L 655 650 L 680 650" class="i2c"/>
+
+  <!-- Legend -->
+  <g transform="translate(40, 720)">
+    <line x1="0" y1="0" x2="20" y2="0" class="pwr legend-swatch"/>
+    <text x="28" y="0" class="small">+V</text>
+    <line x1="60" y1="0" x2="80" y2="0" class="gnd legend-swatch"/>
+    <text x="88" y="0" class="small">GND</text>
+    <line x1="130" y1="0" x2="150" y2="0" class="sig legend-swatch"/>
+    <text x="158" y="0" class="small">SPI/digital</text>
+    <line x1="240" y1="0" x2="260" y2="0" class="i2c legend-swatch"/>
+    <text x="268" y="0" class="small">I2C</text>
+    <line x1="300" y1="0" x2="320" y2="0" class="adc legend-swatch"/>
+    <text x="328" y="0" class="small">ADC (battery)</text>
+  </g>
+</svg>

@@ -1,5 +1,5 @@
-// Display: the clock/console UI (bhoite's Boron Lander layout) and the
-// WMO weather-code to icon mapping.
+// Display: the clock/console UI (bhoite's Boron Lander layout), the day and
+// night palettes, and the WMO weather-code to icon mapping.
 //
 // Top zone (time/city/icon) and bottom strip (temp/humidity) render into
 // offscreen canvases and blit; the middle band (sun times / NASA / dividers)
@@ -18,6 +18,21 @@
 // is the temp/humidity strip.
 static GFXcanvas16 timeCanvas(240, 110);
 static GFXcanvas16 tempCanvas(240, 40);
+
+// Starfield shared with the animations (declared extern in lander.h).
+const Star STARFIELD[] = {
+  {12,8},{45,20},{78,6},{112,18},{155,9},{192,22},{228,14},
+  {8,42},{55,38},{95,52},{138,35},{178,48},{215,33},
+  {22,68},{68,75},{108,62},{152,70},{195,65},{232,72},
+  {15,95},{48,88},{88,98},{145,92},{183,85},{220,100},
+  {30,118},{72,110},{115,125},{160,115},{198,108},{235,120},
+  {5,145},{42,138},{82,152},{130,142},{172,148},{210,135},
+  {18,162},{60,170},{100,158},{148,168},{190,162},{228,175},
+  {35,188},{78,195},{120,182},{165,192},{205,185},{240,178},
+  {10,210},{52,218},{95,205},{140,215},{182,208},{225,220},
+  {28,232},{70,238},{115,228},{160,235},{200,230},{238,240},
+};
+const uint8_t N_STARS = sizeof(STARFIELD) / sizeof(STARFIELD[0]);
 
 // ---------- formatting ----------
 static String formatDate(const struct tm& t) {
@@ -64,12 +79,14 @@ void drawStaticMiddle() {
 }
 
 // ---------- top canvas: date, battery, time, AM/PM, city, weather icon ----------
-void drawTimeConsole() {
-  const uint16_t cDate = ST77XX_CYAN;
-  const uint16_t cTime = ST77XX_GREEN;
-  const uint16_t cAmpm = COLOR_ORANGE;
-  const uint16_t cCity = COLOR_PINK;
-  const uint16_t cBatt = ST77XX_WHITE;
+// `night` swaps the day palette for the dark-mode greens/purples and draws a
+// crescent moon in place of the (now-stale) live weather icon.
+void drawTimeConsole(bool night) {
+  const uint16_t cDate = night ? NIGHT_PURPLE  : ST77XX_CYAN;
+  const uint16_t cTime = night ? NIGHT_GREEN   : ST77XX_GREEN;
+  const uint16_t cAmpm = night ? NIGHT_PURPLE  : COLOR_ORANGE;
+  const uint16_t cCity = night ? NIGHT_MAGENTA : COLOR_PINK;
+  const uint16_t cBatt = night ? NIGHT_TEXT    : ST77XX_WHITE;
 
   timeCanvas.fillScreen(ST77XX_BLACK);
 
@@ -144,7 +161,11 @@ void drawTimeConsole() {
     timeCanvas.print(batbuf);
   }
 
-  if (g_weather.valid) {
+  if (night) {
+    // Crescent moon where the weather icon sits by day (carved from a disc).
+    timeCanvas.fillCircle(212, 55, 16, NIGHT_MOON);
+    timeCanvas.fillCircle(205, 50, 14, ST77XX_BLACK);
+  } else if (g_weather.valid) {
     // Weather icon top-right: 40×40 native
     timeCanvas.drawRGBBitmap(192, 35, iconForWeatherCode(g_weather.weather_code), 40, 40);
     char outbuf[8];
@@ -161,8 +182,8 @@ void drawTimeConsole() {
 }
 
 // ---------- bottom canvas: temp | humidity (2 columns, 2 decimal places) ----------
-void drawTemperatureConsole() {
-  const uint16_t cText = ST77XX_WHITE;
+void drawTemperatureConsole(bool night) {
+  const uint16_t cText = night ? NIGHT_TEXT : ST77XX_WHITE;
 
   tempCanvas.fillScreen(ST77XX_BLACK);
   tempCanvas.setTextWrap(false);
@@ -195,21 +216,22 @@ void drawTemperatureConsole() {
 }
 
 // ---------- middle-band sunrise/sunset times (default size 2) ----------
-void drawSunTimes() {
+void drawSunTimes(bool night) {
   // Clear the strip between dividers under the icons (avoid touching icons).
   // Times sit to the right of the sun icons at (5,175); icons end at x=125.
   tft.fillRect(0, 165, 160, 25, ST77XX_BLACK);
   tft.setFont(NULL);
   tft.setTextSize(2);
-  tft.setTextColor(ST77XX_YELLOW);
+  tft.setTextColor(night ? NIGHT_SUN : ST77XX_YELLOW);
   tft.setCursor(5, 175);
   String s = g_weather.sunrise_hhmm + " " + g_weather.sunset_hhmm;
   tft.print(s);
 }
 
 void renderAll() {
+  bool night = !isAwakeHour();
   if (!g_static_drawn) drawStaticMiddle();
-  drawTimeConsole();
-  drawSunTimes();
-  drawTemperatureConsole();
+  drawTimeConsole(night);
+  drawSunTimes(night);
+  drawTemperatureConsole(night);
 }

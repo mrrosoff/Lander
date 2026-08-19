@@ -1,6 +1,7 @@
 // Shared declarations for the Lander firmware. Split across:
-//   main.cpp    — system + data fetch + backlight/battery + setup/loop
-//   display.cpp — clock/console UI, weather icons
+//   main.cpp       — system + data fetch + backlight/battery + setup/loop
+//   display.cpp    — clock/console UI, weather icons
+//   animations.cpp — sleep/wake transitions
 #pragma once
 
 #include <Arduino.h>
@@ -34,15 +35,26 @@ struct IndoorReading {
   bool  valid         = false;
 };
 
+struct Star { uint8_t x, y; };
+
 // ---------- palette ----------
 // bhoite's day palette
 constexpr uint16_t COLOR_PINK    = 0xf816;
 constexpr uint16_t COLOR_ORANGE  = 0xe469;
 constexpr uint16_t COLOR_DIVIDER = 0x8c71;
 constexpr uint16_t COLOR_BATT    = 0x3d9f;  // light blue
+// dark-mode night palette: muted greens and purples for the quiet-hours screen
+constexpr uint16_t NIGHT_GREEN   = 0x3E6F;  // soft mint (time)
+constexpr uint16_t NIGHT_PURPLE  = 0x92D9;  // muted violet (date, AM/PM)
+constexpr uint16_t NIGHT_MAGENTA = 0xBAD7;  // dusty magenta (city)
+constexpr uint16_t NIGHT_TEXT    = 0x6BAE;  // grey-green (indoor readouts)
+constexpr uint16_t NIGHT_MOON    = 0xCDFC;  // pale lavender (moon)
+constexpr uint16_t NIGHT_SUN     = 0x8C8D;  // dim olive (sun times)
 
-// ---------- shared objects (defined in main.cpp) ----------
+// ---------- shared objects (defined in main.cpp / display.cpp) ----------
 extern Adafruit_ST7789 tft;
+extern const Star      STARFIELD[];
+extern const uint8_t   N_STARS;
 
 // ---------- shared state (defined in main.cpp) ----------
 extern Location      g_location;
@@ -56,8 +68,15 @@ extern bool g_usb_seen;
 
 // ---------- display.cpp ----------
 void drawStaticMiddle();
-void drawTimeConsole();
-void drawTemperatureConsole();
-void drawSunTimes();
+void drawTimeConsole(bool night);
+void drawTemperatureConsole(bool night);
+void drawSunTimes(bool night);
 void renderAll();
 const uint16_t* iconForWeatherCode(int code);
+
+// ---------- main.cpp ----------
+bool isAwakeHour();
+
+// ---------- animations.cpp ----------
+void playSleepTransition();
+void playWakeTransition();

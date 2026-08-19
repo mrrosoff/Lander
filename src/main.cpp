@@ -63,6 +63,7 @@ constexpr uint8_t  BACKLIGHT_PWM_BITS    = 8;
 // midday, dimmest at the edges.
 constexpr uint8_t  BACKLIGHT_DUTY_PEAK   = 28;   // ~11% of 255, at solar noon
 constexpr uint8_t  BACKLIGHT_DUTY_FLOOR  = 6;    // ~2% of 255, at sunrise/sunset
+constexpr uint8_t  BACKLIGHT_DUTY_NIGHT  = 4;    // ~1.5% of 255, quiet-hours night screen
 
 constexpr uint8_t  PIN_LED          = 48;
 constexpr uint32_t LED_PULSE_MS     = 4000;  // one breath in-and-out
@@ -248,6 +249,21 @@ static void wifiOff() {
   WiFi.mode(WIFI_OFF);
 }
 
+// ---------- quiet-hours gating ----------
+// The dark-mode night screen shows during the recipient's sleep window.
+// Minutes-of-day boundaries so we can use half-hour edges. Fail-open: if we
+// don't yet know the time, treat it as awake (day screen).
+constexpr int QUIET_START_MIN = 1 * 60 +  0;  // 1:00 AM, inclusive
+constexpr int QUIET_END_MIN   = 5 * 60 + 30;  // 5:30 AM, exclusive
+
+bool isAwakeHour() {
+  if (!g_ntp_configured) return true;
+  struct tm now;
+  if (!getLocalTime(&now, 0)) return true;
+  int m = now.tm_hour * 60 + now.tm_min;
+  return m < QUIET_START_MIN || m >= QUIET_END_MIN;
+}
+
 // ---------- sun-curve backlight ----------
 static int minutesOfDayNow() {
   struct tm now;
@@ -260,9 +276,11 @@ static int minutesFromHhmm(const String& s) {
   return s.substring(0, 2).toInt() * 60 + s.substring(3, 5).toInt();
 }
 
-// Floor outside daylight, and across daylight a raised-sine bell peaking at
+// During quiet hours the dim night screen stays up at NIGHT duty. Otherwise:
+// floor outside daylight, and across daylight a raised-sine bell peaking at
 // solar noon. Falls back to PEAK until time / sun data is known.
 static uint8_t targetBacklightDuty() {
+  if (!isAwakeHour()) return BACKLIGHT_DUTY_NIGHT;
   int t  = minutesOfDayNow();
   int sr = minutesFromHhmm(g_weather.sunrise_hhmm);
   int ss = minutesFromHhmm(g_weather.sunset_hhmm);
@@ -341,10 +359,12 @@ void setup() {
 }
 
 void loop() {
-  // Refresh weather on a slow cadence and keep the radio off in between. The
-  // first fetch is always allowed so there is data to show.
+  bool awake = isAwakeHour();
+
+  // Refresh weather only while awake — the night screen runs on cached data
+  // with the radio off. The first fetch is always allowed so there's data.
   bool need_weather = !g_weather.valid ||
-      (millis() - g_last_weather_fetch_ms) >= WEATHER_REFRESH_MS;
+      (awake && (millis() - g_last_weather_fetch_ms) >= WEATHER_REFRESH_MS);
 
   if (need_weather) {
     if (!connectWifi()) { delay(RETRY_BACKOFF_MS); return; }
@@ -366,22 +386,25 @@ void loop() {
   // If weather came back but the clock never did, retry NTP on its own tight
   // timer instead of riding the 30-min weather cadence (WiFi is off between
   // refreshes, so SNTP can't recover on its own).
-  if (!g_ntp_configured && g_weather.valid &&
+  // Awake-only, to keep the radio dark during quiet hours.
+  if (awake && !g_ntp_configured && g_weather.valid &&
       (millis() - g_last_ntp_retry_ms) >= NTP_RETRY_MS) {
     g_last_ntp_retry_ms = millis();
     if (connectWifi()) {
-      if (syncNtp()) drawTimeConsole();
+      if (syncNtp()) drawTimeConsole(!awake);
       wifiOff();
     }
   }
 
   updateBacklight();
 
+  bool night = !awake;
+
   // Indoor readout: repaint only when a fresh sensor sample lands (every 5 s).
   if (millis() - g_last_sensor_poll_ms >= SENSOR_POLL_MS) {
     g_last_sensor_poll_ms = millis();
     pollIndoor();
-    drawTemperatureConsole();
+    drawTemperatureConsole(night);
   }
 
   // Battery is in the top console; repaint it only when the percentage moves.
@@ -389,7 +412,22 @@ void loop() {
     g_last_battery_poll_ms = millis();
     int prev_pct = g_battery_pct;
     pollBattery();
-    if (g_battery_pct != prev_pct) drawTimeConsole();
+    if (g_battery_pct != prev_pct) drawTimeConsole(night);
+  }
+
+  // On the day<->night boundary, play the wind-down / wake-up animation, then
+  // repaint everything in the new palette. Skip the animation on the first
+  // classification after boot (nothing to transition from).
+  static int s_last_awake = -1;
+  if ((int)awake != s_last_awake) {
+    bool first = (s_last_awake < 0);
+    s_last_awake = awake;
+    if (!first) {
+      if (awake) playWakeTransition();
+      else       playSleepTransition();
+      g_static_drawn = false;  // the animation overwrote the whole screen
+    }
+    renderAll();
   }
 
   // The clock shows HH:MM (no seconds), so repaint the top console only when
@@ -398,7 +436,7 @@ void loop() {
   static int s_last_min = -1;
   if (g_ntp_configured && getLocalTime(&nowtm, 0) && nowtm.tm_min != s_last_min) {
     s_last_min = nowtm.tm_min;
-    drawTimeConsole();
+    drawTimeConsole(night);
   }
 
   // Rear LED breathes 0..ceiling in raw channel units (global brightness is

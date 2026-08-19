@@ -1,7 +1,7 @@
 // Shared declarations for the Lander firmware. Split across:
 //   main.cpp       — system + data fetch + backlight/battery + setup/loop
-//   display.cpp    — clock/console UI, weather icons
-//   animations.cpp — sleep/wake transitions
+//   display.cpp    — clock/console UI, loading screen, weather icons
+//   animations.cpp — sleep/wake transitions, trouble screen
 #pragma once
 
 #include <Arduino.h>
@@ -61,12 +61,18 @@ extern Location      g_location;
 extern Weather       g_weather;
 extern IndoorReading g_indoor;
 extern bool g_ntp_configured;
+extern bool g_booted;            // true once the real UI is on screen
 extern bool g_static_drawn;
+extern bool g_loading_bg_drawn;
 extern bool g_sensor_ok;
 extern int  g_battery_pct;       // -1 until first read
 extern bool g_usb_seen;
 
 // ---------- display.cpp ----------
+void drawStarfield();
+void drawLoadingScreen(const char* line1, const char* line2, uint8_t frame);
+void updateLoadingFrame(uint8_t frame);
+void scrollLoadingStars();
 void drawStaticMiddle();
 void drawTimeConsole(bool night);
 void drawTemperatureConsole(bool night);
@@ -80,3 +86,4 @@ bool isAwakeHour();
 // ---------- animations.cpp ----------
 void playSleepTransition();
 void playWakeTransition();
+void playTrouble(const char* msg, int theme, uint32_t duration_ms = 3600);  // theme: 0 wifi, 1 location, 2 weather

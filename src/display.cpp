@@ -1,5 +1,5 @@
-// Display: the clock/console UI (bhoite's Boron Lander layout), the day and
-// night palettes, and the WMO weather-code to icon mapping.
+// Display: the clock/console UI (bhoite's Boron Lander layout), the retro
+// loading screen, and the WMO weather-code to icon mapping.
 //
 // Top zone (time/city/icon) and bottom strip (temp/humidity) render into
 // offscreen canvases and blit; the middle band (sun times / NASA / dividers)
@@ -67,8 +67,105 @@ const uint16_t* iconForWeatherCode(int code) {
   return cloud;
 }
 
+// ---------- retro loading screen ----------
+void drawStarfield() {
+  for (uint8_t i = 0; i < N_STARS; i++)
+    tft.drawPixel(STARFIELD[i].x, STARFIELD[i].y, ST77XX_WHITE);
+}
+
+static char s_load_l1[16] = "";
+static char s_load_l2[28] = "";
+
+static void drawLoadingText() {
+  tft.setFont(NULL);
+  tft.setTextWrap(false);
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_GREEN);
+  int16_t w = (int16_t)strlen(s_load_l1) * 12;
+  tft.setCursor((240 - w) / 2, 140);
+  tft.print(s_load_l1);
+  if (s_load_l2[0]) {
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_WHITE);
+    w = (int16_t)strlen(s_load_l2) * 6;
+    tft.setCursor((240 - w) / 2, 165);
+    tft.print(s_load_l2);
+  }
+}
+
+static bool loadingSky(int x, int y) {
+  return !(x >= 84 && x <= 146 && y >= 74 && y <= 120);  // everywhere but the ship
+}
+
+void scrollLoadingStars() {
+  static int last_off = -1;
+  int off = (int)((millis() / 25) % 240);
+  if (off == last_off) return;
+  for (uint8_t i = 0; i < N_STARS; i++) {
+    int y = STARFIELD[i].y;
+    if (last_off >= 0) {
+      int ox = (STARFIELD[i].x - last_off + 240) % 240;
+      if (loadingSky(ox, y)) tft.drawPixel(ox, y, ST77XX_BLACK);
+    }
+    int nx = (STARFIELD[i].x - off + 240) % 240;
+    if (loadingSky(nx, y)) tft.drawPixel(nx, y, ST77XX_WHITE);
+  }
+  drawLoadingText();   // keep the labels on top of the stars passing behind them
+  last_off = off;
+}
+
+// Spaceship pointing right, centered at (cx, cy)
+static void drawShip(int16_t cx, int16_t cy) {
+  tft.fillRect(cx-10, cy-5, 20, 10, ST77XX_CYAN);                       // body
+  tft.fillTriangle(cx+10,cy-5, cx+10,cy+5, cx+22,cy, ST77XX_CYAN);      // nose
+  tft.fillTriangle(cx-4,cy-5, cx+6,cy-5, cx+1,cy-15, COLOR_ORANGE);     // top wing
+  tft.fillTriangle(cx-4,cy+5, cx+6,cy+5, cx+1,cy+15, COLOR_ORANGE);     // bottom wing
+  tft.fillCircle(cx+4, cy, 4, COLOR_PINK);                               // cockpit
+  tft.fillCircle(cx+4, cy, 2, ST77XX_WHITE);
+}
+
+static void drawFlame(int16_t cx, int16_t cy, uint8_t frame) {
+  if (frame & 1) {
+    tft.fillTriangle(cx,cy-3, cx,cy+3, cx-18,cy, ST77XX_YELLOW);
+    tft.fillTriangle(cx,cy-2, cx,cy+2, cx-10,cy, COLOR_ORANGE);
+  } else {
+    tft.fillTriangle(cx,cy-2, cx,cy+2, cx-12,cy, ST77XX_YELLOW);
+    tft.fillTriangle(cx,cy-1, cx,cy+1, cx-7, cy, COLOR_ORANGE);
+  }
+}
+
+void drawLoadingScreen(const char* line1, const char* line2, uint8_t frame) {
+  const int16_t sx = 120, sy = 95;
+  strncpy(s_load_l1, line1 ? line1 : "", sizeof(s_load_l1) - 1);
+  s_load_l1[sizeof(s_load_l1) - 1] = '\0';
+  strncpy(s_load_l2, line2 ? line2 : "", sizeof(s_load_l2) - 1);
+  s_load_l2[sizeof(s_load_l2) - 1] = '\0';
+
+  if (!g_loading_bg_drawn) {
+    tft.fillScreen(ST77XX_BLACK);
+    drawShip(sx, sy);
+    g_loading_bg_drawn = true;
+  }
+
+  tft.fillRect(89, 90, 21, 9, ST77XX_BLACK);
+  drawFlame(sx-10, sy, frame);
+
+  // Clear both text bands, then paint the labels (16px subtitle clear covers the
+  // full glyph cell so no descender row lingers).
+  tft.fillRect(0, 133, 240, 30, ST77XX_BLACK);
+  tft.fillRect(0, 158, 240, 16, ST77XX_BLACK);
+  drawLoadingText();
+}
+
+void updateLoadingFrame(uint8_t frame) {
+  const int16_t sx = 120, sy = 95;
+  tft.fillRect(89, 87, 24, 16, ST77XX_BLACK);
+  drawFlame(sx-10, sy, frame);
+}
+
 // ---------- static middle band (drawn once) ----------
 void drawStaticMiddle() {
+  g_loading_bg_drawn = false;
   tft.fillScreen(ST77XX_BLACK);
   tft.drawRGBBitmap(15,  135, sunrise, 40, 31);
   tft.drawRGBBitmap(85,  135, sunset,  40, 31);

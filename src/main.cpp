@@ -93,7 +93,9 @@ Location      g_location;
 Weather       g_weather;
 IndoorReading g_indoor;
 bool g_ntp_configured = false;
-bool g_static_drawn   = false;
+bool g_booted           = false;
+bool g_static_drawn     = false;
+bool g_loading_bg_drawn = false;
 bool g_sensor_ok      = false;
 int  g_battery_pct    = -1;  // -1 until first read
 bool g_usb_seen       = false;
@@ -139,10 +141,31 @@ static String hhmmFromIso(const char* iso) {
 // ---------- WiFi / data fetch ----------
 static bool connectWifi() {
   WiFi.mode(WIFI_STA);
+  // The loading animation only takes over the screen on first boot; background
+  // refreshes stay silent so the clock keeps showing.
+  if (!g_booted) drawLoadingScreen("CONNECTING", "", 0);
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
-  int found = WiFi.scanNetworks();
+  // Scan asynchronously so the loading screen + LED keep animating instead of
+  // freezing on a static "CONNECTING" frame during the (blocking) all-channel
+  // scan. scanComplete() is <0 while running (-1) or pending/failed (-2); wait
+  // until it reports a count, with a safety timeout.
+  WiFi.scanNetworks(true);
+  uint32_t scan_start = millis();
+  uint8_t  scan_frame = 0;
+  uint32_t scan_last  = 0;
+  int found;
+  while ((found = WiFi.scanComplete()) < 0 && millis() - scan_start < 8000) {
+    if (!g_booted && millis() - scan_last >= 250) {
+      updateLoadingFrame(++scan_frame);
+      scan_last = millis();
+    }
+    if (!g_booted) scrollLoadingStars();
+    g_led[0] = CRGB(0, 0, (uint8_t)(ledBreath() * LED_CEIL));
+    FastLED.show();
+    delay(50);
+  }
   if (found < 0) found = 0;
 
   // Pick the strongest in-range network we have credentials for.
@@ -157,17 +180,61 @@ static bool connectWifi() {
     }
   }
   WiFi.scanDelete();
-  if (!best) return false;
+  if (!best) {
+    if (!g_booted) playTrouble("NO NETWORKS", 0, RETRY_BACKOFF_MS);
+    return false;
+  }
 
+  if (!g_booted) drawLoadingScreen("CONNECTING", best->ssid, 0);
   WiFi.begin(best->ssid, best->pass);
   uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS) delay(50);
-  if (WiFi.status() != WL_CONNECTED) return false;
+  uint8_t  anim_frame = 0;
+  uint32_t last_anim  = 0;
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS) {
+    if (!g_booted && millis() - last_anim >= 250) {
+      updateLoadingFrame(++anim_frame);
+      last_anim = millis();
+    }
+    if (!g_booted) scrollLoadingStars();
+    g_led[0] = CRGB(0, 0, (uint8_t)(ledBreath() * LED_CEIL));
+    FastLED.show();
+    delay(50);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!g_booted) playTrouble("NO WIFI", 0, RETRY_BACKOFF_MS);
+    return false;
+  }
   Serial.printf("WiFi: %s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  if (!g_booted) g_static_drawn = false;  // re-paint static band after status screen
   return true;
 }
 
-static bool fetchLocation() {
+// Run a blocking network+parse job on the other core so the loading screen and
+// LED keep animating on the main core while TLS/HTTP runs. The Arduino loop is
+// on core 1, so the job is pinned to core 0 (where WiFi already lives).
+struct FetchJob { bool (*work)(); volatile bool done; volatile bool ok; };
+static void fetchTask(void* arg) {
+  FetchJob* j = (FetchJob*)arg;
+  j->ok = j->work();
+  j->done = true;
+  vTaskDelete(nullptr);
+}
+static bool runWithLoading(bool (*work)(), const char* label) {
+  if (!g_booted) drawLoadingScreen(label, "", 0);
+  FetchJob job{work, false, false};
+  xTaskCreatePinnedToCore(fetchTask, "fetch", 16384, &job, 1, nullptr, 0);
+  uint8_t frame = 0; uint32_t last = 0;
+  while (!job.done) {
+    if (!g_booted && millis() - last >= 200) { updateLoadingFrame(++frame); last = millis(); }
+    if (!g_booted) scrollLoadingStars();
+    g_led[0] = CRGB(0, 0, (uint8_t)(ledBreath() * LED_CEIL));
+    FastLED.show();
+    delay(30);
+  }
+  return job.ok;
+}
+
+static bool locationWork() {
   String body;
   if (!httpsGet("https://ipinfo.io/json", body)) return false;
 
@@ -189,8 +256,11 @@ static bool fetchLocation() {
   }
 
   g_location.valid = g_location.city.length() > 0;
+
+  if (!g_booted) g_static_drawn = false;
   return g_location.valid;
 }
+static bool fetchLocation() { return runWithLoading(locationWork, "LOCATING"); }
 
 // Point SNTP at the pool and wait up to 5 s for the first sync while WiFi is
 // up. Caller is responsible for having WiFi connected. Uses the offset from the
@@ -206,9 +276,7 @@ static bool syncNtp() {
   return g_ntp_configured;
 }
 
-static bool fetchWeather() {
-  if (!g_location.valid) return false;
-
+static bool weatherWork() {
   char url[448];
   snprintf(url, sizeof(url),
            "https://api.open-meteo.com/v1/forecast"
@@ -241,7 +309,12 @@ static bool fetchWeather() {
   if (g_weather.valid && !g_ntp_configured) syncNtp();
 
   Serial.printf("Weather: %.1fF wmo=%d\n", g_weather.temperature_f, g_weather.weather_code);
+  if (!g_booted) g_static_drawn = false;
   return g_weather.valid;
+}
+static bool fetchWeather() {
+  if (!g_location.valid) return false;
+  return runWithLoading(weatherWork, "WEATHER");
 }
 
 static void wifiOff() {
@@ -355,7 +428,7 @@ void setup() {
   g_sensor_ok = sensor.begin(0x44);
   if (!g_sensor_ok) Serial.println("SHT31 init FAILED");
 
-  tft.fillScreen(ST77XX_BLACK);
+  drawLoadingScreen("LANDER", "booting...", 0);
 }
 
 void loop() {
@@ -367,27 +440,34 @@ void loop() {
       (awake && (millis() - g_last_weather_fetch_ms) >= WEATHER_REFRESH_MS);
 
   if (need_weather) {
-    if (!connectWifi()) { delay(RETRY_BACKOFF_MS); return; }
+    // On failure, the backoff is spent *animating* the retry screen at boot
+    // (never a frozen frame); once booted the clock stays up, so a silent wait
+    // is fine. connectWifi() already animates its own failures at boot.
+    if (!connectWifi()) { if (g_booted) delay(RETRY_BACKOFF_MS); return; }
     if (!g_location.valid && !fetchLocation()) {
       wifiOff();
-      delay(RETRY_BACKOFF_MS);
+      if (!g_booted) playTrouble("NO FIX", 1, RETRY_BACKOFF_MS);
+      else           delay(RETRY_BACKOFF_MS);
       return;
     }
-    if (fetchWeather()) g_last_weather_fetch_ms = millis();
-    else {
+    if (fetchWeather()) {
+      g_last_weather_fetch_ms = millis();
+      renderAll();
+      g_booted = true;  // real UI is now live; suppress future loading screens
+    } else {
       wifiOff();
-      delay(RETRY_BACKOFF_MS);
+      if (!g_booted) playTrouble("WX OFFLINE", 2, RETRY_BACKOFF_MS);
+      else           delay(RETRY_BACKOFF_MS);
       return;
     }
     wifiOff();
-    renderAll();
   }
 
   // If weather came back but the clock never did, retry NTP on its own tight
   // timer instead of riding the 30-min weather cadence (WiFi is off between
   // refreshes, so SNTP can't recover on its own).
   // Awake-only, to keep the radio dark during quiet hours.
-  if (awake && !g_ntp_configured && g_weather.valid &&
+  if (g_booted && awake && !g_ntp_configured && g_weather.valid &&
       (millis() - g_last_ntp_retry_ms) >= NTP_RETRY_MS) {
     g_last_ntp_retry_ms = millis();
     if (connectWifi()) {
@@ -404,7 +484,7 @@ void loop() {
   if (millis() - g_last_sensor_poll_ms >= SENSOR_POLL_MS) {
     g_last_sensor_poll_ms = millis();
     pollIndoor();
-    drawTemperatureConsole(night);
+    if (g_booted) drawTemperatureConsole(night);
   }
 
   // Battery is in the top console; repaint it only when the percentage moves.
@@ -412,14 +492,14 @@ void loop() {
     g_last_battery_poll_ms = millis();
     int prev_pct = g_battery_pct;
     pollBattery();
-    if (g_battery_pct != prev_pct) drawTimeConsole(night);
+    if (g_booted && g_battery_pct != prev_pct) drawTimeConsole(night);
   }
 
   // On the day<->night boundary, play the wind-down / wake-up animation, then
   // repaint everything in the new palette. Skip the animation on the first
   // classification after boot (nothing to transition from).
   static int s_last_awake = -1;
-  if ((int)awake != s_last_awake) {
+  if (g_booted && (int)awake != s_last_awake) {
     bool first = (s_last_awake < 0);
     s_last_awake = awake;
     if (!first) {
@@ -434,7 +514,8 @@ void loop() {
   // the displayed minute changes.
   struct tm nowtm;
   static int s_last_min = -1;
-  if (g_ntp_configured && getLocalTime(&nowtm, 0) && nowtm.tm_min != s_last_min) {
+  if (g_booted && g_ntp_configured && getLocalTime(&nowtm, 0) &&
+      nowtm.tm_min != s_last_min) {
     s_last_min = nowtm.tm_min;
     drawTimeConsole(night);
   }

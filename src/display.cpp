@@ -1,5 +1,5 @@
 // Display: the clock/console UI (bhoite's Boron Lander layout), the retro
-// loading screen, and the WMO weather-code to icon mapping.
+// loading screen, the error/status screen, and the WMO->icon mapping.
 //
 // Top zone (time/city/icon) and bottom strip (temp/humidity) render into
 // offscreen canvases and blit; the middle band (sun times / NASA / dividers)

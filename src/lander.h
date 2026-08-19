@@ -1,8 +1,7 @@
 // Shared declarations for the Lander firmware. Split across:
 //   main.cpp       — system + data fetch + backlight/battery + setup/loop
-//   display.cpp    — clock/console UI, loading screen, weather icons
-//   animations.cpp — sleep/wake transitions, first-boot landing,
-//                    connectivity-trouble screen, science activities
+//   display.cpp    — clock/console UI, loading + status screens, weather icons
+//   animations.cpp — sleep/wake transitions + science-activity animations
 #pragma once
 
 #include <Arduino.h>

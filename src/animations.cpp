@@ -776,7 +776,6 @@ void playActivity(uint8_t a) {
 // Repaint the normal UI after an activity hands back the screen.
 void afterActivity() { g_static_drawn = false; renderAll(); }
 
-// ---------- connectivity trouble screen ----------
 // Friendly "uh-oh, retrying" screen for first-boot connectivity failures: a
 // themed icon searching in vain, a blinking "?", and an animated RETRYING — so
 // a hiccup feels like the lander trying, not an error.

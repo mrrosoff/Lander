@@ -1,6 +1,7 @@
-// Lander firmware: WiFi -> ipinfo.io (geolocation) -> Open-Meteo (weather +
+// Lander firmware: WiFi -> ipapi.co (geolocation) -> Open-Meteo (weather +
 // sunrise/sunset + tz) -> NTP for the clock. UI is a port of Mohit Bhoite's
 // Boron Lander layout (https://bhoite.com/sculptures/boron-lander).
+// Code is split across main / display / animations / lander.h (see CLAUDE.md).
 //
 // Board: ESP32-S3 SuperMini (HW-747).
 // Wiring (screen pin -> ESP32-S3 GPIO):
@@ -60,7 +61,7 @@ constexpr uint8_t  BACKLIGHT_PWM_CHANNEL = 0;
 constexpr uint32_t BACKLIGHT_PWM_FREQ_HZ = 5000;
 constexpr uint8_t  BACKLIGHT_PWM_BITS    = 8;
 // Brightness rides a sunrise->solar-noon->sunset bell curve: brightest at
-// midday, dimmest at the edges.
+// midday, dimmest at the edges and overnight.
 constexpr uint8_t  BACKLIGHT_DUTY_PEAK   = 28;   // ~11% of 255, at solar noon
 constexpr uint8_t  BACKLIGHT_DUTY_FLOOR  = 6;    // ~2% of 255, at sunrise/sunset
 constexpr uint8_t  BACKLIGHT_DUTY_NIGHT  = 4;    // ~1.5% of 255, quiet-hours night screen
@@ -76,7 +77,7 @@ constexpr uint8_t  LED_CEIL         = 40;     // brightest point of a breath at 
 constexpr float    LED_GAMMA        = 0.6f;   // <1 rushes the dim end of the fade so it doesn't step
 
 constexpr uint32_t WIFI_TIMEOUT_MS    = 30000;
-constexpr uint32_t WEATHER_REFRESH_MS = 30UL * 60UL * 1000UL;
+constexpr uint32_t WEATHER_REFRESH_MS = 30UL * 60UL * 1000UL;  // awake hours only
 constexpr uint32_t SENSOR_POLL_MS     = 5000UL;
 constexpr uint32_t BATTERY_POLL_MS    = 30000UL;
 constexpr uint32_t RETRY_BACKOFF_MS   = 30UL * 1000UL;
@@ -91,8 +92,6 @@ constexpr uint32_t NTP_RETRY_MS       = 15UL * 1000UL;  // re-sync clock while s
 #define TROUBLE_TEST_AT_BOOT 0
 
 // ---------- objects + globals (the externs declared in lander.h) ----------
-// TFT_eSPI compiled cleanly but drew nothing at all on this bare module, so the
-// panel is driven with Adafruit_ST7789 + Adafruit_GFX instead.
 Adafruit_ST7789 tft(PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST);
 Adafruit_SHT31  sensor;
 CRGB g_led[1];
@@ -100,26 +99,27 @@ CRGB g_led[1];
 Location      g_location;
 Weather       g_weather;
 IndoorReading g_indoor;
-bool g_ntp_configured = false;
+bool g_ntp_configured   = false;
 bool g_booted           = false;
 bool g_static_drawn     = false;
 bool g_loading_bg_drawn = false;
-bool g_sensor_ok      = false;
-int  g_battery_pct    = -1;  // -1 until first read
-bool g_usb_seen       = false;
+bool g_sensor_ok        = false;
+int  g_battery_pct      = -1;
+bool g_usb_seen         = false;
 uint32_t g_next_activity_ms = 0;
 uint32_t g_last_activity_ms = 0;
+
+// loop-local timers (not shared across files)
+static uint32_t g_last_weather_fetch_ms = 0;
+static uint32_t g_last_sensor_poll_ms   = 0;
+static uint32_t g_last_battery_poll_ms  = 0;
+static uint32_t g_last_ntp_retry_ms     = 0;
 
 // Fires on USB bus reset (cable connected/enumerated). Stays true for the whole
 // boot session so the USB indicator persists even if the serial port is closed.
 static void onUsbBusReset(void*, esp_event_base_t, int32_t, void*) {
   g_usb_seen = true;
 }
-
-static uint32_t g_last_weather_fetch_ms = 0;
-static uint32_t g_last_sensor_poll_ms   = 0;
-static uint32_t g_last_battery_poll_ms  = 0;
-static uint32_t g_last_ntp_retry_ms     = 0;
 
 // ---------- HTTPS GET ----------
 static bool httpsGet(const String& url, String& outBody) {
@@ -134,6 +134,11 @@ static bool httpsGet(const String& url, String& outBody) {
   return true;
 }
 
+static String hhmmFromIso(const char* iso) {
+  if (!iso || strlen(iso) < 16) return String("--:--");
+  return String(iso).substring(11, 16);
+}
+
 // Rear LED "breath": a smooth in-and-out pulse over LED_PULSE_MS, then a quiet
 // rest of LED_PAUSE_MS before the next one. Returns 0..1.
 static float ledBreath() {
@@ -141,11 +146,6 @@ static float ledBreath() {
   if (phase >= LED_PULSE_MS) return 0.0f;          // resting between breaths
   float x = (float)phase / (float)LED_PULSE_MS;    // 0..1 across one breath
   return (1.0f - cosf(x * 2.0f * 3.14159f)) * 0.5f;
-}
-
-static String hhmmFromIso(const char* iso) {
-  if (!iso || strlen(iso) < 16) return String("--:--");
-  return String(iso).substring(11, 16);
 }
 
 // ---------- WiFi / data fetch ----------
@@ -379,11 +379,16 @@ static void updateBacklight() {
   uint8_t duty = targetBacklightDuty();
   static int16_t current = -1;
   if ((int16_t)duty == current) return;
+  bool was_off = current <= 0;
+  if (was_off && duty > 0) tft.enableDisplay(true);
   ledcWrite(BACKLIGHT_PWM_CHANNEL, duty);
+  if (!was_off && duty == 0) tft.enableDisplay(false);
   current = duty;
 }
 
 // ---------- battery ----------
+// batteryPercentFromMv() lives in lander_logic.h (pure, unit-tested).
+
 // The 2x100k divider (~50k source impedance) is higher than the ESP32-S3 ADC
 // likes, so analogReadMilliVolts reads a few % low. Single-point fix: a full
 // 4.2V pack read ~80% (~4000 mV), so scale the result up ~5%. Tune against the
@@ -411,15 +416,20 @@ static void pollIndoor() {
   g_indoor.valid         = true;
 }
 
+// ---------- setup / loop ----------
 void setup() {
   Serial.begin(115200);
   Serial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, onUsbBusReset);
   delay(500);
   Serial.println("Lander boot");
 
+  // 80 MHz is plenty for a clock + 30-min poll and WiFi still works; cuts the
+  // continuous CPU current (the loop never sleeps).
+  setCpuFrequencyMhz(80);
+
   FastLED.addLeds<NEOPIXEL, PIN_LED>(g_led, 1);
   // Full global brightness so the LED gets its complete 8-bit range; the actual
-  // (dim) level is set per-frame from the breath below.
+  // (dim) level is set per-frame via the LED_FLOOR..LED_CEIL band below.
   FastLED.setBrightness(255);
   g_led[0] = CRGB(0, 0, LED_CEIL);
   FastLED.show();
@@ -497,10 +507,10 @@ void loop() {
     wifiOff();
   }
 
-  // If weather came back but the clock never did, retry NTP on its own tight
-  // timer instead of riding the 30-min weather cadence (WiFi is off between
-  // refreshes, so SNTP can't recover on its own).
-  // Awake-only, to keep the radio dark during quiet hours.
+  // If weather came back but the clock never did, the UI is stuck on
+  // "SYNCING...". Retry NTP on its own tight timer instead of riding the 30-min
+  // weather cadence (WiFi is off between refreshes, so SNTP can't recover on its
+  // own). Awake-only, to keep the radio dark during quiet hours.
   if (g_booted && awake && !g_ntp_configured && g_weather.valid &&
       (millis() - g_last_ntp_retry_ms) >= NTP_RETRY_MS) {
     g_last_ntp_retry_ms = millis();
@@ -592,20 +602,21 @@ void loop() {
 
   // Rear LED breathes 0..ceiling in raw channel units (global brightness is
   // full, giving the LED's complete 8-bit range). The ceiling tracks the
-  // backlight sun-curve, so the LED dims with the screen and the pulse fades
-  // fully off at the bottom and during the rest between breaths.
+  // backlight sun-curve, so the LED dims with the screen — lower ceiling when
+  // the sun is low, brightest at midday — and the pulse fades fully off at the
+  // bottom and during the rest between breaths.
   float led_curve = (float)targetBacklightDuty() / (float)BACKLIGHT_DUTY_PEAK;
-  if (led_curve < 0.35f) led_curve = 0.35f;
+  if (led_curve < 0.35f) led_curve = 0.35f;               // keep a visible night heartbeat
   uint8_t led_ceil = (uint8_t)(LED_CEIL * led_curve + 0.5f);
   // Gamma < 1 lifts the dim end of the breath so the fade rushes through the
   // lowest few levels (where 8-bit steps are most visible) instead of dwelling
-  // there.
+  // there — the main cause of the leftover stepping near zero.
   float shaped = powf(ledBreath(), LED_GAMMA);
   uint8_t b = (uint8_t)(led_ceil * shaped + 0.5f);
   if      (g_battery_pct < 0  ) g_led[0] = CRGB(0, 0, b);       // unknown: blue
   else if (g_battery_pct < 20 ) g_led[0] = CRGB(b, 0, 0);       // low: red
   else if (g_battery_pct < 50 ) g_led[0] = CRGB(b, b/2, 0);     // mid: yellow
-  else                          g_led[0] = CRGB(0, b, 0);       // good: green
+  else                           g_led[0] = CRGB(0, b, 0);       // good: green
   FastLED.show();
 
   delay(100);

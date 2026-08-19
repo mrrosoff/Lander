@@ -1,5 +1,6 @@
 // Lander firmware: WiFi -> ipinfo.io (geolocation) -> Open-Meteo (weather +
-// sunrise/sunset + tz) -> NTP for the clock.
+// sunrise/sunset + tz) -> NTP for the clock. UI is a port of Mohit Bhoite's
+// Boron Lander layout (https://bhoite.com/sculptures/boron-lander).
 //
 // Board: ESP32-S3 SuperMini (HW-747).
 // Wiring (screen pin -> ESP32-S3 GPIO):
@@ -25,12 +26,11 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
 #include <Adafruit_SHT31.h>
 #include <time.h>
 
 #include "secrets.h"
+#include "lander.h"
 #include "lander_logic.h"
 
 // WiFi credentials come from secrets.h as a WIFI_NETWORKS list of
@@ -67,43 +67,26 @@ constexpr uint32_t BATTERY_POLL_MS    = 30000UL;
 constexpr uint32_t RETRY_BACKOFF_MS   = 30UL * 1000UL;
 constexpr uint32_t NTP_RETRY_MS       = 15UL * 1000UL;  // re-sync clock while stuck on SYNCING
 
+// ---------- objects + globals (the externs declared in lander.h) ----------
 // TFT_eSPI compiled cleanly but drew nothing at all on this bare module, so the
 // panel is driven with Adafruit_ST7789 + Adafruit_GFX instead.
 Adafruit_ST7789 tft(PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST);
 Adafruit_SHT31  sensor;
 
-struct Location {
-  String city;
-  String region;
-  float  latitude  = 0.0f;
-  float  longitude = 0.0f;
-  bool   valid     = false;
-};
-
-struct Weather {
-  float   temperature_f   = 0.0f;
-  float   humidity_pct    = 0.0f;
-  float   cloud_cover_pct = 0.0f;
-  float   wind_mph        = 0.0f;
-  int     weather_code    = -1;
-  String  sunrise_hhmm;
-  String  sunset_hhmm;
-  long    utc_offset_secs = 0;
-  bool    valid           = false;
-};
-
-struct IndoorReading {
-  float temperature_f = 0.0f;
-  float humidity_pct  = 0.0f;
-  bool  valid         = false;
-};
-
 Location      g_location;
 Weather       g_weather;
 IndoorReading g_indoor;
 bool g_ntp_configured = false;
-bool g_sensor_ok   = false;
-int  g_battery_pct = -1;  // -1 until first read
+bool g_static_drawn   = false;
+bool g_sensor_ok      = false;
+int  g_battery_pct    = -1;  // -1 until first read
+bool g_usb_seen       = false;
+
+// Fires on USB bus reset (cable connected/enumerated). Stays true for the whole
+// boot session so the USB indicator persists even if the serial port is closed.
+static void onUsbBusReset(void*, esp_event_base_t, int32_t, void*) {
+  g_usb_seen = true;
+}
 
 static uint32_t g_last_weather_fetch_ms = 0;
 static uint32_t g_last_sensor_poll_ms   = 0;
@@ -268,31 +251,9 @@ static void pollIndoor() {
   g_indoor.valid         = true;
 }
 
-static void drawReadings() {
-  tft.fillRect(0, 70, 240, 130, ST77XX_BLACK);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(2);
-
-  struct tm now;
-  tft.setCursor(20, 80);
-  if (g_ntp_configured && getLocalTime(&now, 0)) tft.printf("%02d:%02d", now.tm_hour, now.tm_min);
-  else                                           tft.print("--:--");
-
-  tft.setCursor(20, 110);
-  if (g_location.valid) tft.print(g_location.city);
-
-  tft.setCursor(20, 140);
-  if (g_weather.valid) tft.printf("out %.1fF wmo%d", g_weather.temperature_f, g_weather.weather_code);
-
-  tft.setCursor(20, 170);
-  if (g_indoor.valid) tft.printf("in %.2fF %.2f%%", g_indoor.temperature_f, g_indoor.humidity_pct);
-
-  tft.setCursor(20, 200);
-  if (g_battery_pct >= 0) tft.printf("batt %d%%", g_battery_pct);
-}
-
 void setup() {
   Serial.begin(115200);
+  Serial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, onUsbBusReset);
   delay(500);
   Serial.println("Lander boot");
 
@@ -311,10 +272,6 @@ void setup() {
   if (!g_sensor_ok) Serial.println("SHT31 init FAILED");
 
   tft.fillScreen(ST77XX_BLACK);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(3);
-  tft.setCursor(48, 40);
-  tft.print("LANDER");
 }
 
 void loop() {
@@ -337,7 +294,7 @@ void loop() {
       return;
     }
     wifiOff();
-    drawReadings();
+    renderAll();
   }
 
   // If weather came back but the clock never did, retry NTP on its own tight
@@ -347,19 +304,34 @@ void loop() {
       (millis() - g_last_ntp_retry_ms) >= NTP_RETRY_MS) {
     g_last_ntp_retry_ms = millis();
     if (connectWifi()) {
-      syncNtp();
+      if (syncNtp()) drawTimeConsole();
       wifiOff();
     }
   }
 
-  if (g_battery_pct < 0 || millis() - g_last_battery_poll_ms >= BATTERY_POLL_MS) {
-    g_last_battery_poll_ms = millis();
-    pollBattery();
-  }
+  // Indoor readout: repaint only when a fresh sensor sample lands (every 5 s).
   if (millis() - g_last_sensor_poll_ms >= SENSOR_POLL_MS) {
     g_last_sensor_poll_ms = millis();
     pollIndoor();
-    drawReadings();
+    drawTemperatureConsole();
   }
+
+  // Battery is in the top console; repaint it only when the percentage moves.
+  if (g_battery_pct < 0 || millis() - g_last_battery_poll_ms >= BATTERY_POLL_MS) {
+    g_last_battery_poll_ms = millis();
+    int prev_pct = g_battery_pct;
+    pollBattery();
+    if (g_battery_pct != prev_pct) drawTimeConsole();
+  }
+
+  // The clock shows HH:MM (no seconds), so repaint the top console only when
+  // the displayed minute changes.
+  struct tm nowtm;
+  static int s_last_min = -1;
+  if (g_ntp_configured && getLocalTime(&nowtm, 0) && nowtm.tm_min != s_last_min) {
+    s_last_min = nowtm.tm_min;
+    drawTimeConsole();
+  }
+
   delay(100);
 }

@@ -1,7 +1,7 @@
-// Lander firmware: WiFi -> ipapi.co (geolocation) -> Open-Meteo (weather +
+// Lander firmware: WiFi -> ipinfo.io (geolocation) -> Open-Meteo (weather +
 // sunrise/sunset + tz) -> NTP for the clock. UI is a port of Mohit Bhoite's
 // Boron Lander layout (https://bhoite.com/sculptures/boron-lander).
-// Code is split across main / display / animations / lander.h (see CLAUDE.md).
+// Code is split across main / display / animations / lander.h.
 //
 // Board: ESP32-S3 SuperMini (HW-747).
 // Wiring (screen pin -> ESP32-S3 GPIO):

@@ -1,7 +1,8 @@
 // Shared declarations for the Lander firmware. Split across:
 //   main.cpp       — system + data fetch + backlight/battery + setup/loop
 //   display.cpp    — clock/console UI, loading screen, weather icons
-//   animations.cpp — sleep/wake transitions, landing sequence, trouble screen
+//   animations.cpp — sleep/wake transitions, first-boot landing,
+//                    connectivity-trouble screen, science activities
 #pragma once
 
 #include <Arduino.h>
@@ -51,6 +52,23 @@ constexpr uint16_t NIGHT_TEXT    = 0x6BAE;  // grey-green (indoor readouts)
 constexpr uint16_t NIGHT_MOON    = 0xCDFC;  // pale lavender (moon)
 constexpr uint16_t NIGHT_SUN     = 0x8C8D;  // dim olive (sun times)
 
+// ---------- science activities ----------
+enum Activity : uint8_t {
+  ACT_EXCAVATE, ACT_WEATHER, ACT_SOLAR, ACT_REACTOR,
+  ACT_TRANSMIT, ACT_STARGAZE, ACT_DIAG, ACT_SEISMO, ACT_PANORAMA,
+  ACT_COUNT
+};
+constexpr uint32_t ACTIVITY_RUN_MS      = 13000;             // animated portion
+constexpr uint32_t ACTIVITY_HOLD_MS     = 2000;              // result hold -> ~15 s total
+constexpr uint32_t ACTIVITY_GAP_MIN_MS  = 10UL * 60 * 1000;  // hard floor between any two
+constexpr uint32_t ACTIVITY_IDLE_MIN_MS = 16UL * 60 * 1000;  // random idle interval, low
+constexpr uint32_t ACTIVITY_IDLE_MAX_MS = 32UL * 60 * 1000;  // random idle interval, high
+// Per-trigger cooldowns so a reactive activity can't crowd out the idle pool:
+// SOLAR re-arms on every 2% climb (constant on a sunny day), WEATHER can
+// oscillate between adjacent codes on a marginal day.
+constexpr uint32_t SOLAR_COOLDOWN_MS    = 2UL * 60 * 60 * 1000;  // at most once / 2h
+constexpr uint32_t WEATHER_COOLDOWN_MS  = 45UL * 60 * 1000;      // at most once / 45min
+
 // ---------- shared objects (defined in main.cpp / display.cpp) ----------
 extern Adafruit_ST7789 tft;
 extern const Star      STARFIELD[];
@@ -67,6 +85,8 @@ extern bool g_loading_bg_drawn;
 extern bool g_sensor_ok;
 extern int  g_battery_pct;       // -1 until first read
 extern bool g_usb_seen;
+extern uint32_t g_next_activity_ms;
+extern uint32_t g_last_activity_ms;
 
 // ---------- display.cpp ----------
 void drawStarfield();
@@ -88,3 +108,7 @@ void playSleepTransition();
 void playWakeTransition();
 void playLanding();
 void playTrouble(const char* msg, int theme, uint32_t duration_ms = 3600);  // theme: 0 wifi, 1 location, 2 weather
+void playActivity(uint8_t a);
+void scheduleNextActivity();
+uint8_t pickIdleActivity();
+void afterActivity();

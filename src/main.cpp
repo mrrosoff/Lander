@@ -82,6 +82,14 @@ constexpr uint32_t BATTERY_POLL_MS    = 30000UL;
 constexpr uint32_t RETRY_BACKOFF_MS   = 30UL * 1000UL;
 constexpr uint32_t NTP_RETRY_MS       = 15UL * 1000UL;  // re-sync clock while stuck on SYNCING
 
+// TEMP: set to 1 to play the sleep + wake transitions once at boot. Back to 0
+// to remove.
+#define ANIM_TEST_AT_BOOT 0
+// TEMP: set to 1 to slowly loop through every science activity at boot for preview.
+#define ACTIVITY_TEST_AT_BOOT 0
+// TEMP: set to 1 to preview the connectivity error animations at boot.
+#define TROUBLE_TEST_AT_BOOT 0
+
 // ---------- objects + globals (the externs declared in lander.h) ----------
 // TFT_eSPI compiled cleanly but drew nothing at all on this bare module, so the
 // panel is driven with Adafruit_ST7789 + Adafruit_GFX instead.
@@ -99,6 +107,8 @@ bool g_loading_bg_drawn = false;
 bool g_sensor_ok      = false;
 int  g_battery_pct    = -1;  // -1 until first read
 bool g_usb_seen       = false;
+uint32_t g_next_activity_ms = 0;
+uint32_t g_last_activity_ms = 0;
 
 // Fires on USB bus reset (cable connected/enumerated). Stays true for the whole
 // boot session so the USB indicator persists even if the serial port is closed.
@@ -428,6 +438,29 @@ void setup() {
   g_sensor_ok = sensor.begin(0x44);
   if (!g_sensor_ok) Serial.println("SHT31 init FAILED");
 
+  randomSeed(esp_random());
+  scheduleNextActivity();
+
+#if ANIM_TEST_AT_BOOT
+  for (int i = 0; i < 2; i++) { playSleepTransition(); playWakeTransition(); }
+#endif
+#if ACTIVITY_TEST_AT_BOOT
+  // Preview mode: slowly loop through every activity forever, with a short gap
+  // between each so they're easy to review. Set the flag to 0 to boot normally.
+  for (;;) {
+    for (uint8_t a = 0; a < ACT_COUNT; a++) {
+      playActivity(a);
+      tft.fillScreen(ST77XX_BLACK);
+      delay(2000);
+    }
+  }
+#endif
+#if TROUBLE_TEST_AT_BOOT
+  playTrouble("NO WIFI", 0);
+  playTrouble("NO FIX", 1);
+  playTrouble("WX OFFLINE", 2);
+#endif
+
   drawLoadingScreen("LANDER", "booting...", 0);
 }
 
@@ -489,11 +522,15 @@ void loop() {
   }
 
   // Battery is in the top console; repaint it only when the percentage moves.
-  if (g_battery_pct < 0 || millis() - g_last_battery_poll_ms >= BATTERY_POLL_MS) {
+  bool solar_rose = false;
+  if (g_battery_pct < 0 ||
+      millis() - g_last_battery_poll_ms >= BATTERY_POLL_MS) {
     g_last_battery_poll_ms = millis();
     int prev_pct = g_battery_pct;
     pollBattery();
     if (g_booted && g_battery_pct != prev_pct) drawTimeConsole(night);
+    // Battery climbing on its own (no USB enumerated) = charging from the sun.
+    if (prev_pct >= 0 && g_battery_pct >= prev_pct + 2 && !g_usb_seen) solar_rose = true;
   }
 
   // On the day<->night boundary, play the wind-down / wake-up animation, then
@@ -519,6 +556,38 @@ void loop() {
       nowtm.tm_min != s_last_min) {
     s_last_min = nowtm.tm_min;
     drawTimeConsole(night);
+  }
+
+  // Science activities. Reactive triggers (weather change, USB power, solar
+  // charge) take priority over the random idle timer; everything is suppressed
+  // during quiet hours and held off by a 12-min floor so it can't spam.
+  int pending = -1;
+  static int  s_last_wcode    = -999;
+  static bool s_usb_prev      = false;
+  static uint32_t s_last_solar_ms   = 0;
+  static uint32_t s_last_weather_ms = 0;
+  static bool s_solar_fired   = false;
+  static bool s_weather_fired = false;
+  if (g_weather.valid && g_weather.weather_code != s_last_wcode) {
+    if (s_last_wcode != -999 &&
+        (!s_weather_fired || millis() - s_last_weather_ms >= WEATHER_COOLDOWN_MS))
+      pending = ACT_WEATHER;                            // skip the first classification
+    s_last_wcode = g_weather.weather_code;
+  }
+  if (g_usb_seen && !s_usb_prev) pending = ACT_REACTOR;  // external power just appeared
+  s_usb_prev = g_usb_seen;
+  if (solar_rose &&
+      (!s_solar_fired || millis() - s_last_solar_ms >= SOLAR_COOLDOWN_MS))
+    pending = ACT_SOLAR;                                 // battery climbing on the sun
+  if (pending < 0 && millis() >= g_next_activity_ms) pending = pickIdleActivity();
+
+  if (pending >= 0 && g_booted && awake &&
+      millis() - g_last_activity_ms >= ACTIVITY_GAP_MIN_MS) {
+    if (pending == ACT_SOLAR)        { s_last_solar_ms = millis();   s_solar_fired = true; }
+    else if (pending == ACT_WEATHER) { s_last_weather_ms = millis(); s_weather_fired = true; }
+    playActivity((uint8_t)pending);
+    afterActivity();
+    scheduleNextActivity();
   }
 
   // Rear LED breathes 0..ceiling in raw channel units (global brightness is

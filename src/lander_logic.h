@@ -23,3 +23,15 @@ inline int batteryPercentFromMv(int mv) {
   }
   return 100;
 }
+
+// WMO weather code -> category index used by the weather animation:
+// 0 clear, 1 partly cloudy, 2 cloudy/fog, 3 rain, 4 snow, 5 storm.
+inline int wxType(int c) {
+  if (c == 0)                                        return 0;
+  if (c <= 2)                                        return 1;
+  if (c == 3 || c == 45 || c == 48)                  return 2;
+  if ((c >= 51 && c <= 67) || (c >= 80 && c <= 82))  return 3;
+  if ((c >= 71 && c <= 77) || c == 85 || c == 86)    return 4;
+  if (c >= 95)                                       return 5;
+  return 2;
+}

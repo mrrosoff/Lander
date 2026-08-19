@@ -452,6 +452,7 @@ void loop() {
     }
     if (fetchWeather()) {
       g_last_weather_fetch_ms = millis();
+      if (!g_booted) playLanding();
       renderAll();
       g_booted = true;  // real UI is now live; suppress future loading screens
     } else {

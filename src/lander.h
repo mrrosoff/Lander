@@ -1,7 +1,7 @@
 // Shared declarations for the Lander firmware. Split across:
 //   main.cpp       — system + data fetch + backlight/battery + setup/loop
 //   display.cpp    — clock/console UI, loading screen, weather icons
-//   animations.cpp — sleep/wake transitions, trouble screen
+//   animations.cpp — sleep/wake transitions, landing sequence, trouble screen
 #pragma once
 
 #include <Arduino.h>
@@ -86,4 +86,5 @@ bool isAwakeHour();
 // ---------- animations.cpp ----------
 void playSleepTransition();
 void playWakeTransition();
+void playLanding();
 void playTrouble(const char* msg, int theme, uint32_t duration_ms = 3600);  // theme: 0 wifi, 1 location, 2 weather

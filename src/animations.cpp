@@ -1,4 +1,5 @@
-// Animations: sleep/wake night transitions + the connectivity trouble screen.
+// Animations: sleep/wake night transitions, the first-boot landing sequence,
+// and the connectivity trouble screen.
 //
 // Every frame is composited into an offscreen GFXcanvas16 and pushed in a
 // single blit, so the panel never shows an intermediate blank state (no
@@ -35,6 +36,20 @@ static void gfxCenterText(Adafruit_GFX& g, const char* s, int16_t y, uint8_t siz
   g.print(s);
 }
 
+static void gfxOrbit(Adafruit_GFX& g, int cx, int cy, int a, int b, float rot, uint16_t col) {
+  float cr = cosf(rot), sr = sinf(rot);
+  int px = 0, py = 0;
+  for (int i = 0; i <= 24; i++) {
+    float t = i * 0.2618f;  // 2*pi/24
+    float ex = a * cosf(t), ey = b * sinf(t);
+    int x = cx + (int)(ex * cr - ey * sr);
+    int y = cy + (int)(ex * sr + ey * cr);
+    if (i > 0) g.drawLine(px, py, x, y, col);
+    px = x; py = y;
+  }
+}
+
+// A short arc — a wifi-style wavefront of radius r centred on direction `dir`.
 static void gfxWave(Adafruit_GFX& g, int cx, int cy, float dir, int r, uint16_t col) {
   int px = 0, py = 0;
   for (int i = 0; i <= 8; i++) {
@@ -94,6 +109,134 @@ void playWakeTransition() {
     if (step >= 16) gfxCenterText(cv, "GOOD MORNING", 170, 2, ST77XX_CYAN);
     tft.drawRGBBitmap(0, 0, cv.getBuffer(), 240, 240);
     delay(step >= 16 ? 600 : 40);
+  }
+}
+
+// ---------- first-boot landing sequence ----------
+static void drawPlanet(GFXcanvas16& cv, int cx, int cy) {
+  gfxOrbit(cv, cx, cy, 28, 9, 0.35f, 0x8C9A);    // ring, back half
+  cv.fillCircle(cx, cy, 15, 0x3192);
+  cv.fillCircle(cx - 4, cy - 3, 12, 0x6DBE);     // lit limb
+  cv.fillCircle(cx + 6, cy + 5, 5, 0x2150);      // surface mottle
+  gfxOrbit(cv, cx, cy, 28, 9, 0.35f, 0xCE59);    // ring, front half
+}
+
+static void drawSurface(GFXcanvas16& cv, int gy) {
+  const uint16_t crust = 0xF52A, mid = 0xB2A4, deep = 0x6981, shadow = 0x4861;
+  for (int x = 0; x < 240; x++) {
+    int sy = gy + (int)(sinf(x * 0.04f) * 7.0f + sinf(x * 0.13f + 2.0f) * 3.0f);
+    cv.drawFastVLine(x, sy, 240 - sy, deep);
+    cv.drawFastVLine(x, sy, 9, mid);
+    cv.drawFastVLine(x, sy, 3, crust);
+  }
+  const int cxs[3] = {68, 150, 198};
+  const int cys[3] = {gy + 22, gy + 15, gy + 27};
+  const int crs[3] = {12, 9, 7};
+  for (int i = 0; i < 3; i++) {
+    cv.fillCircle(cxs[i], cys[i], crs[i], shadow);
+    cv.drawCircle(cxs[i], cys[i], crs[i], crust);
+  }
+}
+
+static void drawLander(GFXcanvas16& cv, int cx, int cy) {
+  const uint16_t body = 0xC618, dark = 0x8410, leg = 0xAD55;
+  cv.drawLine(cx - 11, cy + 7, cx - 19, cy + 18, leg);   // legs
+  cv.drawLine(cx + 11, cy + 7, cx + 19, cy + 18, leg);
+  cv.fillRect(cx - 22, cy + 18, 7, 2, leg);              // feet
+  cv.fillRect(cx + 15, cy + 18, 7, 2, leg);
+  cv.fillTriangle(cx - 13, cy - 7, cx + 13, cy - 7, cx, cy - 20, dark);  // cone
+  cv.fillRect(cx - 14, cy - 7, 28, 15, body);            // body
+  cv.drawRect(cx - 14, cy - 7, 28, 15, dark);
+  cv.fillCircle(cx, cy, 5, ST77XX_CYAN);                 // window
+  cv.fillCircle(cx - 1, cy - 1, 2, ST77XX_WHITE);
+}
+
+static void drawRetroFlame(GFXcanvas16& cv, int cx, int topY, int len, uint8_t f) {
+  if (len <= 0) return;
+  const uint16_t outer = (f & 1) ? ST77XX_YELLOW : COLOR_ORANGE;
+  cv.fillTriangle(cx - 7, topY, cx + 7, topY, cx, topY + len, outer);
+  cv.fillTriangle(cx - 3, topY, cx + 3, topY, cx, topY + (len * 2) / 3, ST77XX_WHITE);
+}
+
+void playLanding() {
+  g_loading_bg_drawn = false;
+  GFXcanvas16 cv(240, 240);
+  const int gy = 196, landY = gy - 22, startY = 24, N = 64;
+
+  for (int s = 0; s <= N; s++) {
+    float f    = (float)s / N;
+    float ease = 1.0f - (1.0f - f) * (1.0f - f);
+    int   cy   = startY + (int)((landY - startY) * ease + 0.5f);
+    cv.fillScreen(ST77XX_BLACK);
+    gfxStars(cv);
+    drawPlanet(cv, 46, 80);
+    drawSurface(cv, gy);
+    drawRetroFlame(cv, 120, cy + 8, 9 + (int)((1.0f - f) * 16), (uint8_t)s);
+    drawLander(cv, 120, cy);
+    tft.drawRGBBitmap(0, 0, cv.getBuffer(), 240, 240);
+    delay(42);
+  }
+
+  const int ND = 22;
+  float px[ND], py[ND], pvx[ND], pvy[ND];
+  for (int i = 0; i < ND; i++) {
+    float side = (i & 1) ? 1.0f : -1.0f;
+    px[i]  = 120 + side * 15 + (random(9) - 4);
+    py[i]  = gy - 2;
+    pvx[i] = side * (0.7f + random(130) / 100.0f);
+    pvy[i] = -(0.6f + random(150) / 100.0f);
+  }
+  const uint16_t dcol[3] = {0xF52A, 0xB2A4, 0x6981};
+  for (int fr = 0; fr < 22; fr++) {
+    uint16_t c = dcol[fr < 8 ? 0 : fr < 15 ? 1 : 2];
+    cv.fillScreen(ST77XX_BLACK);
+    gfxStars(cv);
+    drawPlanet(cv, 46, 80);
+    drawSurface(cv, gy);
+    if (fr < 16) {
+      cv.drawCircle(108, gy, 5 + fr * 3, c);
+      cv.drawCircle(132, gy, 5 + fr * 3, c);
+    }
+    drawLander(cv, 120, landY);
+    gfxCenterText(cv, "TOUCHDOWN", 30, 2, COLOR_ORANGE);
+    for (int i = 0; i < ND; i++) {
+      px[i] += pvx[i];
+      py[i] += pvy[i];
+      pvy[i] += 0.16f;                              // gravity
+      pvx[i] *= 0.96f;                              // drag
+      if (py[i] > gy) { py[i] = gy; pvx[i] *= 0.6f; }
+      cv.fillCircle((int)px[i], (int)py[i], fr < 11 ? 2 : 1, c);
+    }
+    tft.drawRGBBitmap(0, 0, cv.getBuffer(), 240, 240);
+    delay(48);
+  }
+  delay(700);
+
+  for (int fr = 0; fr <= 26; fr++) {
+    cv.fillScreen(ST77XX_BLACK);
+    gfxStars(cv);
+    drawPlanet(cv, 46, 80);
+    drawSurface(cv, gy);
+    drawLander(cv, 120, landY);
+    int topY = landY - 20;
+    cv.drawLine(120, topY, 120, topY - 9, 0xAD55);
+    bool beacon = (fr / 2) & 1;
+    cv.fillCircle(120, topY - 10, 2, beacon ? ST77XX_RED : 0x3000);
+    if (beacon)
+      for (int k = 1; k <= 3; k++)
+        gfxWave(cv, 120, topY - 10, -1.5708f, 4 + k * 6, 0x07FF);
+    cv.fillCircle(112, landY + 1, 1, (fr % 3 == 0) ? ST77XX_GREEN  : 0x0320);
+    cv.fillCircle(128, landY + 1, 1, (fr % 3 == 1) ? ST77XX_YELLOW : 0x3200);
+    gfxCenterText(cv, "INITIALIZING", 30, 2, ST77XX_CYAN);
+    tft.drawRGBBitmap(0, 0, cv.getBuffer(), 240, 240);
+    delay(70);
+  }
+  delay(500);
+
+  for (int y = 240; y >= 0; y -= 18) {
+    cv.fillRect(0, y, 240, 240 - y, ST77XX_BLACK);
+    tft.drawRGBBitmap(0, 0, cv.getBuffer(), 240, 240);
+    delay(18);
   }
 }
 

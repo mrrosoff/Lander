@@ -8,6 +8,8 @@ sun-bell curve through the day and slips into a calm dark night screen in the
 small hours. Every so often the lander takes over the display to run a little
 "doing science" animation, then hands the screen back to the clock.
 
+![lander image](lander.heic)
+
 ## Getting started
 
 You need [PlatformIO](https://platformio.org/) and a WiFi network. Copy
